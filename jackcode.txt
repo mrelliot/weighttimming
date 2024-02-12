@@ -1,0 +1,318 @@
+###Assume the following inputs#####
+# n=sample size                             #
+# y=vector of outcomes                   #
+# x=vector of predictors                   #
+# h=vector of inclusion strata values #
+# a,s=priors on sigma                     #
+# Sigma, B0=priors on beta             #
+###############################
+
+# function dmatrix
+# argument:
+#
+# vars,		vector of expressions; each expression
+#		is a variable name for vector of predictors
+#
+# returns design matrix with vectors of 1, var1, var2, ...
+#
+dmatrix <-
+function(vars) {
+
+	# input error check
+	stopifnot(length(vars) != 0);	
+
+	result <- rep(1, length(eval(vars[1])));
+
+	for(i in 1:length(vars)) {
+		result <- cbind(result, eval(vars[i]));
+	}
+
+	return(result);
+}
+
+# function imatrix <-
+# argument:
+#
+# A,		full design matrix
+# i,		stratum number
+# membership,	vector of stratum numbers for the nrow(A) observations
+#
+# returns design matrix corresponding to stratum h
+#
+imatrix <-
+function(A, i, membership) {
+
+	p <- ncol(A);
+	n <- nrow(A);
+
+	# input error check
+	stopifnot(i >= min(membership) && i <= max(membership));
+	stopifnot(n == sum(table(membership)));
+
+	cols <- c(1:p);
+	rows <- c(1:n)[membership == i]
+
+	return(A[rows,cols]);
+}
+
+######################################################
+# Make sure the following variables are set correctly:
+#
+# p,	number of predictors + 1
+# dX,	design matrix for unweighted estimator.
+######################################################
+
+p<-3
+
+# for case where x is a vector
+#dX <- dmatrix(expression(x));
+
+# for case where predictors are vectors x1 x2 x3
+# dX <- dmatrix(expression(x1, x2, x3))
+
+# for case where x is a matrix or data frame
+dX <- cbind(rep(1,1000), x);
+
+H<-length(table(h))
+
+###Fully-weighted####
+wh<-rep(2000,10)/table(h)
+wt<-wh[h]
+tx2 <- dX
+resid<-lm(y~dX[,2:p],weights=c(wt))$residuals
+SB<-matrix(rep(0,p*p),p,p)
+W<-diag(wt)
+for(i in 1:H){
+	z<-c(wt[h==i]*resid[h==i])*tx2[h==i,]
+	zbar<-t(z)%*%rep(1/length(wt[h==i]),length(wt[h==i]))
+	zbar2<-NULL
+	for(j in 1:p){
+		zbar2<-cbind(zbar2,rep(zbar[j],length(wt[h==i])))
+	}
+	SB<-SB+length(wt[h==i])/(length(wt[h==i])-1)*t(z-zbar2)%*%(z-zbar2)
+}
+XTX<-t(tx2)%*%W%*%tx2
+
+# assume we have matrices:
+#
+varfwt <- matrix(rep(0, SIM*p), SIM, p)
+varfwtv <- matrix(rep(0, SIM*p), SIM, p)
+varfwtl <- matrix(rep(0, SIM*p), SIM, p)
+varfwtu <- matrix(rep(0, SIM*p), SIM, p)
+
+varfwt[sim,]<-lm(y~dX[,2:p],weights=c(wt))$coefficients[1:p]
+varfwtv[sim,]<-diag((solve(XTX)%*%SB%*%solve(XTX)))
+varfwtl[sim,]<-varfwt[sim,]-qt(.975,H-2)*sqrt(varfwtv[sim,])
+varfwtu[sim,]<-varfwt[sim,]+qt(.975,H-2)*sqrt(varfwtv[sim,])
+
+###Unweighted###
+wt<-rep(20000/n,n)
+tx2 <- dX
+resid<-lm(y~dX[,2:p],weights=c(wt))$residuals
+SB<-matrix(rep(0,p*p),p,p)
+W<-diag(wt)
+for(i in 1:H){
+	z<-c(wt[h==i]*resid[h==i])*tx2[h==i,]
+	zbar<-t(z)%*%rep(1/length(wt[h==i]),length(wt[h==i]))
+	zbar2<-NULL
+	for(j in 1:p){
+		zbar2<-cbind(zbar2,rep(zbar[j],length(wt[h==i])))
+	}
+	SB<-SB+length(wt[h==i])/(length(wt[h==i])-1)*t(z-zbar2)%*%(z-zbar2)
+}
+XTX<-t(tx2)%*%W%*%tx2
+
+# assume we have matrices:
+#
+varunwt <- matrix(rep(0, SIM*p), SIM, p)
+varunwtv <- matrix(rep(0, SIM*p), SIM, p)
+varunwtl <- matrix(rep(0, SIM*p), SIM, p)
+varunwtu <- matrix(rep(0, SIM*p), SIM, p)
+
+varunwt[sim,]<-lm(y~dX[,2:p],weights=c(wt))$coefficients[1:p]
+varunwtv[sim,]<-diag((solve(XTX)%*%SB%*%solve(XTX)))
+varunwtl[sim,]<-varunwt[sim,]-qt(.975,n-2)*sqrt(varunwtv[sim,])
+varunwtu[sim,]<-varunwt[sim,]+qt(.975,n-2)*sqrt(varunwtv[sim,])
+
+###Trimmed weight###
+wh<-rep(2000,10)/table(h)
+wt<-wh[h]
+trimwt<-pmin(wt,3*20000/n)
+trimwt<-20000/sum(trimwt)*trimwt
+resid<-lm(y~dX[,2:p],weights=c(trimwt))$residuals
+SB<-matrix(rep(0,p*p),p,p)
+W<-diag(trimwt)
+for(i in 1:H){
+	z<-c(trimwt[h==i]*resid[h==i])*tx2[h==i,]
+	zbar<-t(z)%*%rep(1/length(wt[h==i]),length(wt[h==i]))
+	zbar2<-NULL
+	for(j in 1:p){
+		zbar2<-cbind(zbar2,rep(zbar[j],length(wt[h==i])))
+	}
+	SB<-SB+length(wt[h==i])/(length(wt[h==i])-1)*t(z-zbar2)%*%(z-zbar2)
+}
+XTX<-t(tx2)%*%W%*%tx2
+
+# assume we have matrices:
+#
+vartwt <- matrix(rep(0, SIM*p), SIM, p)
+vartwtv <- matrix(rep(0, SIM*p), SIM, p)
+vartwtl <- matrix(rep(0, SIM*p), SIM, p)
+vartwtu <- matrix(rep(0, SIM*p), SIM, p)
+
+vartwt[sim,]<-lm(y~dX[,2:p],weights=c(trimwt))$coefficients[1:p]
+vartwtv[sim,]<-diag((solve(XTX)%*%SB%*%solve(XTX)))
+vartwtl[sim,]<-vartwt[sim,]-qt(.975,H-2)*sqrt(vartwtv[sim,])
+vartwtu[sim,]<-vartwt[sim,]+qt(.975,H-2)*sqrt(vartwtv[sim,])
+
+alllnpy<-matrix(rep(0,2^(H-1)*(H-1)),2^(H-1),(H-1))
+
+for(k in 1:(H-1)){
+	alllnpy[,k]<- rep(c(rep(0,2^(k-1)),rep(1,2^(k-1))), 2^(H-1-k))
+}
+
+lnpy<-rep(0,2^(H-1))
+
+tX<-cbind(rep(1,n),x)
+b<-solve(t(tX)%*%tX)%*%t(tX)%*%y
+beta0<-B0
+Sigma0<-Sigma
+D<-t(b)%*%(t(tX)%*%tX)%*%b+t(beta0)%*%solve(Sigma0)%*%beta0+a*s^2
+psi<-solve(t(tX)%*%tX+solve(Sigma0))
+theta<-(t(tX)%*%tX)%*%b+solve(Sigma0)%*%beta0
+Q<-t(y-tX%*%b)%*%(y-tX%*%b)
+
+lnpy[1]<--((n+a)/2)*log((Q+D-t(theta)%*%psi%*%theta)/2)+.5*logmydet(psi)
+
+for(k in 2:(2^(H-1))){
+
+	pT<-alllnpy[k,]
+	l<-sum(pT)+1
+	X<-matrix(rep(0,n*p*l),n,p*l)
+	X[c(1:n)[h==1], 1:p]<-imatrix(dX, 1, h);
+	lp<-1
+	for(cyc in 1:(H-1)){
+		if(pT[cyc]==0){
+			X[c(1:n)[(h==(cyc+1))],(p*(lp-1)+1):(p*lp)]<-
+			imatrix(dX, cyc+1, h);
+		}
+		if(pT[cyc]==1){
+			lp<-lp+1
+			X[c(1:n)[(h==(cyc+1))],(p*(lp-1)+1):(p*lp)]<-
+			imatrix(dX, cyc+1, h);
+		}
+	}
+
+	b<-solve(t(X)%*%X)%*%t(X)%*%y
+	beta0<-rep(B0,l)
+	Sigma0<-kronecker(diag(1,l),Sigma)
+	D<-t(b)%*%(t(X)%*%X)%*%b+t(beta0)%*%solve(Sigma0)%*%beta0+a*s^2
+	psi<-solve(t(X)%*%X+solve(Sigma0))
+	theta<-(t(X)%*%X)%*%b+solve(Sigma0)%*%beta0
+	Q<-t(y-X%*%b)%*%(y-X%*%b)
+
+	lnpy[k]<--((n+a)/2)*log((Q+D-t(theta)%*%psi%*%theta)/2)+.5*logmydet(psi)
+
+}
+
+
+py<-exp(lnpy-max(lnpy))/sum(exp(lnpy-max(lnpy)))
+py<-py/sum(py)
+
+SAMP<-200
+holdB<-matrix(rep(0, SAMP*p), SAMP, p);
+for(samp in 1:SAMP){
+
+	pT<-alllnpy[sample(c(1:2^(H-1)),size=1,prob=py),]
+	l<-sum(pT)+1
+
+	tX <- dX;
+
+	if(l>1){
+		tX<-matrix(rep(0,n*p*l),n,p*l)
+		tX[c(1:n)[h==1], 1:p]<-imatrix(dX, 1, h);
+		lp<-1
+		for(cyc in 1:(H-1)){
+			if(pT[cyc]==0){
+				tX[c(1:n)[(h==(cyc+1))],(p*(lp-1)+1):(p*lp)]<-
+				imatrix(dX, cyc+1, h);
+			}
+			if(pT[cyc]==1){
+				lp<-lp+1
+				tX[c(1:n)[(h==(cyc+1))],(p*(lp-1)+1):(p*lp)]<-
+				imatrix(dX, cyc+1, h);
+			}
+		}
+
+	}
+
+	X<-tX
+
+	if(l==1){
+
+		b<-solve(t(X)%*%X)%*%t(X)%*%y
+		beta0<-B0
+		Sigma0<-Sigma
+		D<-t(b)%*%(t(X)%*%X)%*%b+t(beta0)%*%solve(Sigma0)%*%beta0+a*s^2
+		psi<-solve(t(X)%*%X+solve(Sigma0))
+		theta<-(t(X)%*%X)%*%b+solve(Sigma0)%*%beta0
+		Q<-t(y-X%*%b)%*%(y-X%*%b)
+
+		sigmasq<-(Q+D-t(theta)%*%psi%*%theta)/rchisq(1,n+a)
+
+		Gl<-solve(t(X)%*%X+solve(Sigma0))
+		Al<-t(X)%*%y+solve(Sigma0)%*%beta0
+		beta<-drawmvn(1,Gl%*%Al,c(sigmasq)*Gl)
+
+		B<-beta
+
+	}
+
+	if(l>1){
+
+		b<-solve(t(X)%*%X)%*%t(X)%*%y
+		beta0<-rep(B0,l)
+		Sigma0<-kronecker(diag(1,l),Sigma)
+		D<-t(b)%*%(t(X)%*%X)%*%b+t(beta0)%*%solve(Sigma0)%*%beta0+a*s^2
+		psi<-solve(t(X)%*%X+solve(Sigma0))
+		theta<-(t(X)%*%X)%*%b+solve(Sigma0)%*%beta0
+		Q<-t(y-X%*%b)%*%(y-X%*%b)
+
+		sigmasq<-(Q+D-t(theta)%*%psi%*%theta)/rchisq(1,n+a)
+
+		Gl<-solve(t(X)%*%X+solve(Sigma0))
+		Al<-t(X)%*%y+solve(Sigma0)%*%beta0
+		beta<-drawmvn(1,Gl%*%Al,c(sigmasq)*Gl)
+		beta<-matrix(beta,p,l)
+
+		wh<-rep(2000,10)/table(h)
+		wt<-wh[h]
+		s1<-0
+		s2<-0
+		for(lp in 1:l){
+			Xl<-X[,(p*(lp-1)+1):(p*lp)]
+			s1<-s1+t(Xl)%*%diag(wt)%*%Xl
+			s2<-s2+(t(Xl)%*%diag(wt)%*%Xl)%*%beta[,lp]
+		}
+		B<-solve(s1)%*%s2
+
+	}
+
+	holdB[samp,]<-c(B[1:p])
+
+}
+
+# assume we have matrices:
+#
+varpwt <- matrix(rep(0, SIM*p), SIM, p)
+varpwtl <- matrix(rep(0, SIM*p), SIM, p)
+varpwtu <- matrix(rep(0, SIM*p), SIM, p)
+varpwtv <- matrix(rep(0, SIM*p), SIM, p)
+
+for (i in 1:p) {
+	sortB <- sort(holdB[,i]);
+	varpwt[sim,i] <- median(holdB[,i]);
+	varpwtl[sim,i]<-sortB[5]
+	varpwtu[sim,i]<-sortB[195]
+	varpwtv[sim,i] <- var(holdB[,i]);
+}
