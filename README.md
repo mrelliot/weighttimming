@@ -18,3 +18,7 @@ Both methods allow for the possibility of ``partially-weighted'' data that uses 
 "Bayesian Weight Trimming for Generalized Linear Regression Models," (Elliott 2007), Survey Methodology, 33, 23-34 extends the weight smoothing models of Elliott and Little (2000) to accommodate linear and generalized linear models: [https://www150.statcan.gc.ca/n1/en/pub/12-001-x/2007001/article/9849-eng.pdf?st=juuoWKQO](url)
 "Model Averaging Methods for Weight Trimming," (Elliott 2008), Journal of Official Statistics, 24, 517-540 extends the weight pooling models of Elliott and Little (2000) to accommodate linear models and to allow for all contiguous inclusion strata to be considered for pooling. The latter induces a high degree of robustness into our model, protecting against "over-pooling" that simpler models suffered from in Elliott and Little (2000): [https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2783643/](url)
 "Model Averaging Methods for Weight Trimming in Generalized Linear Regression Models," (Elliott 2009), Journal of Official Statistics, 25, 1-20 extends Elliott (2009) to allow for weight pooling of generalized linear models: [https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3530169/](url)
+
+R code for implementing the "Bayesian Weight Trimming for Generalized Linear Regression Models" paper is available in smooth_linear.txt and smooth_logistic.txt
+R code for implementing the  "Model Averaging Methods for Weight Trimming in Generalized Linear Regression Models" is available in jackcode.txt
+Code is "as is".
