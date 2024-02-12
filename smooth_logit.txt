@@ -1,0 +1,550 @@
+
+mysolve<-function(x){
+return(
+solve(x,tol=1e-100)
+)
+}
+
+drawmvn<-function(myn,mymean,mysigma){
+for(i in 1:length(mysigma[1,])){
+for(j in 1:i){
+mysigma[i,j]<-mysigma[j,i]
+}}
+return(rep(mymean,myn)+kronecker(diag(rep(1,myn)),t(chol(mysigma,pivot=TRUE)))%*%rnorm(myn*length(mymean)))
+}
+
+mydet<-function(A){
+return(
+prod(eigen(A)$values)
+)
+}
+
+logmydet<-function(A){
+return(
+sum(log(eigen(A)$values))
+)
+}
+
+
+mydummy<-function(myx)
+{
+        mx <- max(myx)
+        myf <- NULL
+        for(i in 1:mx) {
+                myy <- myx - myx
+                myy[myx == i] <- 1
+                myf <- (cbind(myf, myy))
+        }
+        return(myf)
+}
+
+lnfrho<-function(rho,p,H,latent,Sigma){
+betatwiddle<-latent
+betastar<-latent
+betastar[1,]<-latent[1,]-rho*latent[2,]
+for(i in 2:(H-1)){
+betastar[i,]<-(1+rho^2)*latent[i,]-rho*(latent[(i-1),]+latent[(i+1),])
+}
+betastar[H,]<-latent[H,]-rho*latent[(H-1),]
+temp<-t(betastar)%*%betatwiddle
+return(
+-p*(H-1)*log(1-rho^2)/2-sum(diag(mysolve(Sigma)%*%temp))/(2*(1-rho^2))
+)
+}
+
+expit<-function(x){
+return(
+exp(x)/(1+exp(x))
+)
+}
+
+mvnf3<-function(myA,mean,sigma){
+templl<--.5*t(myA-mean)%*%mysolve(sigma)%*%(myA-mean)
+return(templl)
+}
+
+###This R code assumes that the following objects are available:
+###
+###n=sample size
+###h=vector of weight stratum codes
+###Ph=proportion of (estimated) population in each weight stratum
+###p=number of covariates (including intercept) in regression model
+###y=n x 1 vector of outcomes
+###x=n x (p-1) matrix of covariates (excluding intercept)
+###burn=burn-in period for MCMC
+###SAMP=number of samples for MCMC
+
+###postb is a matrix of size p x (SAMP-burn) that contains the posterior predictive draws of B, the population slope
+
+p<-2
+H<-length(table(h))
+
+###Prior for G###
+pG<-diag(c(1,1))
+
+
+###Exch###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+tx2<-NULL
+for(i in 1:H){
+for(j in 1:p){
+tx2<-cbind(tx2,tx[,j]*mydummy(h[order(h)])[,i])
+}}
+
+latent<-rnorm(p*H,0,sqrt(.1))
+
+Sigma<-diag(rep(1,p))
+
+Tx<-cbind(rep(1,n),x)
+beta<-glm(y~x,family=binomial)$coefficients
+
+pSigma<-diag(c(1,1))
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*SAMP),p,SAMP)
+holdSigma<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+holdr<-rep(0,SAMP)
+holdr2<-rep(0,SAMP)
+for(samp in 1:SAMP){
+
+rho<-0
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,Sigma)
+myoffset<-tx%*%beta
+junk<-glm(ty~0+tx2,offset=myoffset,family=binomial)
+jc<-junk$coefficients
+jv<-summary.glm(junk)$cov.unscaled
+
+meanprop<-mysolve(mysolve(jv)+mysolve(V))%*%mysolve(jv)%*%jc
+varprop<-mysolve(mysolve(jv)+mysolve(V))
+
+tlatent<-drawmvn(1,latent,.1*varprop)
+r<-exp(
+sum((tx2%*%(rep(beta,H)+tlatent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+tlatent)))))+mvnf3(tlatent,rep(0,p*H),V)-
+(sum((tx2%*%(rep(beta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+latent)))))+mvnf3(latent,rep(0,p*H),V))
+)
+if(r>runif(1)) latent<-tlatent
+
+myoffset<-tx2%*%latent
+junk<-glm(ty~0+tx,offset=myoffset,family=binomial)
+tbeta<-drawmvn(1,beta,2*summary.glm(junk)$cov.unscaled)
+r2<-exp(
+sum((tx2%*%(rep(tbeta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(tbeta,H)+latent)))))-
+(sum((tx2%*%(rep(beta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+latent))))))
+)
+if(r2>runif(1)) beta<-tbeta
+
+mlatent<-t(matrix(latent,p,H))
+myS<-mysolve(t(mlatent)%*%mlatent+.1*pSigma)
+junk3<-t(matrix(drawmvn((H+1),rep(0,p),myS),p,(H+1)))
+Sigma<-mysolve(t(junk3)%*%junk3)
+
+holdlatent[,,samp]<-mlatent
+holdbeta[,samp]<-beta
+holdSigma[,,samp]<-Sigma
+holdr[samp]<-r
+holdr2[samp]<-r2
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+sB<-glm(y~x,family=binomial)$coefficients
+wt<-wh[h]
+Wh<-c(wt[order(h)])
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(samp in 1:((SAMP-burn))){
+B<-c(sB)
+pBh<-rep(0,n)
+for(i in 1:n){
+pBh[i]<-expit(tx[i,]%*%holdbetah[h[order(h)][i],,samp+burn])
+}
+const<-1
+oldB<-B
+oldB2<-c(1,1)
+repeat{
+pB<-expit(tx%*%B)
+B2<-const*mysolve(t(tx)%*%diag(c(Wh*pB*(1-pB)))%*%tx)%*%(t(t(rep(1,n))%*%(c(Wh*pB)*tx))-t(t(rep(1,n))%*%(c(Wh*pBh)*tx)))
+B<-B-B2
+if(sum(abs(B-oldB))<1e-04) break
+if(max(B2)>=max(oldB2)){
+const<-const/2
+B<-oldB
+}
+if(max(B2)<max(oldB2)){
+oldB2<-B2
+oldB<-B
+}
+}
+postb[,samp]<-B[2]
+#print(samp)
+}
+
+
+###AR 1###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+tx2<-NULL
+for(i in 1:H){
+for(j in 1:p){
+tx2<-cbind(tx2,tx[,j]*mydummy(h[order(h)])[,i])
+}}
+
+latent<-rnorm(p*H,0,sqrt(.1))
+
+Sigma<-diag(rep(1,p))
+
+Tx<-cbind(rep(1,n),x)
+beta<-glm(y~x,family=binomial)$coefficients
+
+pSigma<-diag(c(1,1))
+
+rho<-0
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*SAMP),p,SAMP)
+holdSigma<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+holdrho<-rep(0,SAMP)
+holdr<-rep(0,SAMP)
+holdr2<-rep(0,SAMP)
+for(samp in 1:SAMP){
+
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,Sigma)
+
+myoffset<-tx%*%beta
+junk<-glm(ty~0+tx2,offset=myoffset,family=binomial)
+jc<-junk$coefficients
+jv<-summary.glm(junk)$cov.unscaled
+
+meanprop<-mysolve(mysolve(jv)+mysolve(V))%*%mysolve(jv)%*%jc
+varprop<-mysolve(mysolve(jv)+mysolve(V))
+
+tlatent<-drawmvn(1,latent,.1*varprop)
+r<-exp(
+sum((tx2%*%(rep(beta,H)+tlatent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+tlatent)))))+mvnf3(tlatent,rep(0,p*H),V)-
+(sum((tx2%*%(rep(beta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+latent)))))+mvnf3(latent,rep(0,p*H),V))
+)
+if(r>runif(1)) latent<-tlatent
+
+myoffset<-tx2%*%latent
+junk<-glm(ty~0+tx,offset=myoffset,family=binomial)
+tbeta<-drawmvn(1,beta,2*summary.glm(junk)$cov.unscaled)
+r2<-exp(
+sum((tx2%*%(rep(tbeta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(tbeta,H)+latent)))))-
+(sum((tx2%*%(rep(beta,H)+latent))*ty)-sum(log(1+exp((tx2%*%(rep(beta,H)+latent))))))
+)
+if(r2>runif(1)) beta<-tbeta
+
+Slatent<-t(matrix(latent,p,H))
+betatwiddle<-Slatent
+betastar<-Slatent
+betastar[1,]<-Slatent[1,]-rho*Slatent[2,]
+for(i in 2:(H-1)){
+betastar[i,]<-(1+rho^2)*Slatent[i,]-rho*(Slatent[(i-1),]+Slatent[(i+1),])
+}
+betastar[H,]<-Slatent[H,]-rho*Slatent[(H-1),]
+temp<-t(betastar)%*%betatwiddle
+myS<-mysolve((1/(1-rho^2))*temp+.1*pSigma)
+junk3<-t(matrix(drawmvn((H+1),rep(0,p),myS),p,(H+1)))
+Sigma<-mysolve(t(junk3)%*%junk3)
+
+####Truncate rho to be positive###
+trho<-runif(100,0,1)
+tlnfrho<-rep(0,100)
+for(i in 1:100){
+tlnfrho[i]<-lnfrho(trho[i],p,H,Slatent,Sigma)
+}
+rho<-sample(trho,size=1,prob=exp(tlnfrho))
+
+holdlatent[,,samp]<-Slatent
+holdbeta[,samp]<-beta
+holdSigma[,,samp]<-Sigma
+holdrho[samp]<-rho
+holdr[samp]<-r
+holdr2[samp]<-r2
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+sB<-glm(y~x,family=binomial)$coefficients
+wt<-wh[h]
+Wh<-c(wt[order(h)])
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(samp in 1:((SAMP-burn))){
+B<-c(sB)
+pBh<-rep(0,n)
+for(i in 1:n){
+pBh[i]<-expit(tx[i,]%*%holdbetah[h[order(h)][i],,samp+burn])
+}
+const<-1
+oldB<-B
+oldB2<-c(1,1)
+repeat{
+pB<-expit(tx%*%B)
+B2<-const*mysolve(t(tx)%*%diag(c(Wh*pB*(1-pB)))%*%tx)%*%(t(t(rep(1,n))%*%(c(Wh*pB)*tx))-t(t(rep(1,n))%*%(c(Wh*pBh)*tx)))
+B<-B-B2
+if(sum(abs(B-oldB))<1e-04) break
+if(max(B2)>=max(oldB2)){
+const<-const/2
+B<-oldB
+}
+if(max(B2)<max(oldB2)){
+oldB2<-B2
+oldB<-B
+}
+}
+postb[,samp]<-B[2]
+#print(samp)
+}
+
+
+###Linear###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+tx2<-NULL
+for(i in 1:H){
+for(j in 1:p){
+tx2<-cbind(tx2,tx[,j]*mydummy(h[order(h)])[,i])
+}}
+
+latent<-rnorm(p*H,0,sqrt(.1))
+
+Sigma<-diag(rep(1,p))
+
+Tx<-cbind(rep(1,n),x,h,h*x)
+beta<-glm(y~0+Tx,family=binomial)$coefficients
+Tx2<-cbind(rep(1,n),x[order(h)],h[order(h)],h[order(h)]*x[order(h)])
+
+pSigma<-diag(c(1,1))
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*2*SAMP),p*2,SAMP)
+holdSigma<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+holdrho<-rep(0,SAMP)
+holdr<-rep(0,SAMP)
+holdr2<-rep(0,SAMP)
+for(samp in 1:SAMP){
+
+rho<-0
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,Sigma)
+
+myoffset<-Tx2%*%beta
+junk<-glm(ty~0+tx2,offset=myoffset,family=binomial,maxit=100)
+jc<-junk$coefficients
+jv<-summary.glm(junk)$cov.unscaled
+meanprop<-mysolve(mysolve(jv)+mysolve(V))%*%mysolve(jv)%*%jc
+varprop<-mysolve(mysolve(jv)+mysolve(V))
+tlatent<-drawmvn(1,latent,.1*varprop)
+r<-exp(
+sum((Tx2%*%beta+tx2%*%tlatent)*ty)-sum(log(1+exp(Tx2%*%beta+tx2%*%tlatent)))+mvnf3(tlatent,rep(0,p*H),V)-
+(sum((Tx2%*%beta+tx2%*%latent)*ty)-sum(log(1+exp(Tx2%*%beta+tx2%*%latent)))+mvnf3(latent,rep(0,p*H),V))
+)
+if(r>runif(1)) latent<-tlatent
+
+myoffset<-tx2%*%latent
+junk<-glm(ty~0+Tx2,offset=myoffset,family=binomial,maxit=100)
+if(max(junk$coefficients,na.rm=TRUE)<15) cov<-summary.glm(junk)$cov.unscaled
+tbeta<-drawmvn(1,beta,.25*cov)
+
+r2<-exp(
+sum((Tx2%*%tbeta+tx2%*%latent)*ty)-sum(log(1+exp(Tx2%*%tbeta+tx2%*%latent)))-
+(sum((Tx2%*%beta+tx2%*%latent)*ty)-sum(log(1+exp(Tx2%*%beta+tx2%*%latent))))
+)
+if(r2>runif(1)) beta<-tbeta
+
+Slatent<-t(matrix(latent,p,H))
+for(i in 1:p){
+Sigma[i,i]<-sum(Slatent[,i]^2+.1)/rchisq(1,H-1+1)
+}
+
+holdlatent[,,samp]<-Slatent
+holdbeta[,samp]<-beta
+holdSigma[,,samp]<-Sigma
+holdr[samp]<-r
+holdr2[samp]<-r2
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-cbind((holdbeta[1,i]+c(1:H)*holdbeta[3,i]),(holdbeta[2,i]+c(1:H)*holdbeta[4,i]))+holdlatent[,,i]
+}
+
+sB<-glm(y~x,family=binomial)$coefficients
+wt<-wh[h]
+Wh<-c(wt[order(h)])
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(samp in 1:((SAMP-burn))){
+B<-c(sB)
+pBh<-rep(0,n)
+for(i in 1:n){
+pBh[i]<-expit(tx[i,]%*%holdbetah[h[order(h)][i],,samp+burn])
+}
+const<-1
+oldB<-B
+oldB2<-c(1,1)
+repeat{
+pB<-expit(tx%*%B)
+B2<-const*mysolve(t(tx)%*%diag(c(Wh*pB*(1-pB)))%*%tx)%*%(t(t(rep(1,n))%*%(c(Wh*pB)*tx))-t(t(rep(1,n))%*%(c(Wh*pBh)*tx)))
+B<-B-B2
+if(sum(abs(B-oldB))<1e-04) break
+if(max(B2)>=max(oldB2)){
+const<-const/2
+B<-oldB
+}
+if(max(B2)<max(oldB2)){
+oldB2<-B2
+oldB<-B
+}
+}
+postb[,samp]<-B[2]
+}
+
+###non-parametric###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+
+Sigma<-diag(rep(1,p))
+
+Tx<-cbind(rep(1,n),x,h,h*x)
+beta<-glm(y~0+Tx,family=binomial)$coefficients
+
+X<-tx
+Tx3<-cbind(tx,h[order(h)]*tx)
+Tx2<-cbind(rep(1,n),x[order(h)],h[order(h)],h[order(h)]*x[order(h)])
+
+HX<-((1/(H-1))*(c(1:H)-1))
+nomega<-matrix(c(rep(0,H*H)),H,H)
+for(l in 1:H){
+for(m in 1:H){
+nomega[l,m]<-HX[l]*HX[m]*min(HX[l],HX[m])-(HX[l]+HX[m])*((min(HX[l],HX[m]))^2)/2+((min(HX[l],HX[m]))^3)/3
+}}
+myZ<-t(chol(nomega[2:(H),2:(H)]))
+myZ<-t(cbind(c(rep(0,(H-1))),t(myZ)))
+cspline<-matrix(c(rep(0,((H-1)*n))),n,(H-1))
+for(i in 1:n){cspline[i,]<-myZ[h[order(h)][i],]}
+
+cspline2<-array(c(rep(0,(p*(H-1)*n))),dim=c(n,(H-1),p))
+for(j in 1:p){cspline2[,,j]<-cspline*matrix(rep(tx[,j],(H-1)),n,(H-1))}
+cspline3<-cspline2[,,1]
+for(j in 2:p){
+cspline3<-cbind(cspline3,cspline2[,,j])
+}
+
+latent<-rnorm((H-1)*p,0,.1)
+
+holdlatent<-array(rep(0,(H-1)*p*SAMP),dim=c(H-1,p,SAMP))
+holdbeta<-matrix(rep(0,p*2*SAMP),p*2,SAMP)
+holdSigma<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+holdr<-rep(0,SAMP)
+holdr2<-rep(0,SAMP)
+
+for(samp in 1:SAMP){
+
+V<-kronecker(Sigma,diag(H-1))
+
+myoffset<-Tx3%*%beta
+junk<-glm(ty~0+cspline3,offset=myoffset,family=binomial,maxit=100)
+jc<-junk$coefficients
+jv<-summary.glm(junk)$cov.unscaled
+meanprop<-mysolve(mysolve(jv)+mysolve(V))%*%mysolve(jv)%*%jc
+varprop<-mysolve(mysolve(jv)+mysolve(V))
+tlatent<-drawmvn(1,latent,.1*varprop)
+r<-exp(
+sum((Tx3%*%beta+cspline3%*%tlatent)*ty)-sum(log(1+exp(Tx3%*%beta+cspline3%*%tlatent)))+
+mvnf3(tlatent,rep(0,p*(H-1)),V)-
+(sum((Tx3%*%beta+cspline3%*%latent)*ty)-sum(log(1+exp(Tx3%*%beta+cspline3%*%latent)))+
+mvnf3(latent,rep(0,p*(H-1)),V))
+)
+if(r>runif(1)) latent<-tlatent
+
+myoffset<-cspline3%*%latent
+junk<-glm(ty~0+Tx3,offset=myoffset,family=binomial,maxit=100)
+if(max(junk$coefficients,na.rm=TRUE)<15) cov<-summary.glm(junk)$cov.unscaled
+tbeta<-drawmvn(1,beta,.25*cov)
+r2<-exp(
+sum((Tx3%*%tbeta+cspline3%*%latent)*ty)-sum(log(1+exp(Tx3%*%tbeta+cspline3%*%latent)))-
+(sum((Tx3%*%beta+cspline3%*%latent)*ty)-sum(log(1+exp(Tx3%*%beta+cspline3%*%latent))))
+)
+if(r2>runif(1)) beta<-tbeta
+
+hlatent<-matrix(latent,H-1,p)
+for(j in 1:p){
+Sigma[j,j]<-sum(hlatent[,j]^2+.1)/rchisq(1,H-3+1)
+}
+
+holdlatent[,,samp]<-hlatent
+holdbeta[,samp]<-beta
+holdSigma[,,samp]<-Sigma
+holdr[samp]<-r
+holdr2[samp]<-r2
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-cbind(
+(holdbeta[1,i]+c(1:H)*holdbeta[3,i]+myZ%*%holdlatent[,1,i]),
+(holdbeta[2,i]+c(1:H)*holdbeta[4,i]+myZ%*%holdlatent[,2,i])
+)
+}
+sB<-glm(y~x,family=binomial)$coefficients
+wt<-wh[h]
+Wh<-c(wt[order(h)])
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(samp in 1:((SAMP-burn))){
+B<-c(sB)
+pBh<-rep(0,n)
+for(i in 1:n){
+pBh[i]<-expit(tx[i,]%*%holdbetah[h[order(h)][i],,samp+burn])
+}
+const<-1
+oldB<-B
+oldB2<-c(1,1)
+repeat{
+pB<-expit(tx%*%B)
+B2<-const*mysolve(t(tx)%*%diag(c(Wh*pB*(1-pB)))%*%tx)%*%(t(t(rep(1,n))%*%(c(Wh*pB)*tx))-t(t(rep(1,n))%*%(c(Wh*pBh)*tx)))
+B<-B-B2
+if(sum(abs(B-oldB))<1e-04) break
+if(max(B2)>=max(oldB2)){
+const<-const/2
+B<-oldB
+}
+if(max(B2)<max(oldB2)){
+oldB2<-B2
+oldB<-B
+}
+}
+postb[,samp]<-B[2]
+}

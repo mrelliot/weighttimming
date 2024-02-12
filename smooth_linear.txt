@@ -1,0 +1,543 @@
+drawmvn<-function(myn,mymean,mysigma){
+for(i in 1:length(mysigma[1,])){
+for(j in 1:i){
+mysigma[i,j]<-mysigma[j,i]
+}}
+return(rep(mymean,myn)+kronecker(diag(rep(1,myn)),t(chol(mysigma)))%*%rnorm(myn*length(mymean)))
+}
+
+mydet<-function(A){
+return(
+prod(eigen(A)$values)
+)
+}
+
+logmydet<-function(A){
+return(
+sum(log(eigen(A)$values))
+)
+}
+
+
+mydummy<-function(myx)
+{
+        mx <- max(myx)
+        myf <- NULL
+        for(i in 1:mx) {
+                myy <- myx - myx
+                myy[myx == i] <- 1
+                myf <- (cbind(myf, myy))
+        }
+        return(myf)
+}
+
+lnfrho<-function(rho,p,H,latent,G){
+betatwiddle<-latent
+betastar<-latent
+betastar[1,]<-latent[1,]-rho*latent[2,]
+for(i in 2:(H-1)){
+betastar[i,]<-(1+rho^2)*latent[i,]-rho*(latent[(i-1),]+latent[(i+1),])
+}
+betastar[H,]<-latent[H,]-rho*latent[(H-1),]
+temp<-t(betastar)%*%betatwiddle
+return(
+-p*(H-1)*log(1-rho^2)/2-sum(diag(solve(G)%*%temp))/(2*(1-rho^2))
+)
+}
+
+###This R code assumes that the following objects are available:
+###
+###n=sample size
+###h=vector of weight stratum codes
+###Ph=proportion of (estimated) population in each weight stratum
+###p=number of covariates (including intercept) in regression model
+###y=n x 1 vector of outcomes
+###x=n x (p-1) matrix of covariates (excluding intercept)
+###burn=burn-in period for MCMC
+###SAMP=number of samples for MCMC
+
+###postb is a matrix of size p x (SAMP-burn) that contains the posterior predictive draws of B, the population slope
+
+p<-2
+H<-length(table(h))
+
+###Prior for G###
+pG<-diag(c(1,1))
+
+###Exchangable weight smoothing###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+
+ab<-matrix(rep(0,H*2),H,2)
+for(j in 1:H){
+ab[j,]<-lm(y[h==j]~x[h==j])$coefficients
+}
+
+G<-matrix(rep(0,p*p),p,p)
+for(i in 1:p){
+for(j in 1:p){
+G[i,j]<-var(ab[,i],ab[,j])
+}}
+
+beta<-NULL
+for(i in 1:p){
+beta<-c(beta,mean(ab[,i]))
+}
+latent<-ab
+for(i in 1:p){
+latent[,p]<-ab[,p]-beta[p]
+}
+junk2<-cumsum(N)
+junky<-ty
+junky[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%(latent[1,]+beta)
+for(i in 2:H){
+junky[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%(latent[i,]+beta)
+}
+sigma<-var(junky)
+G<-diag(rep(sigma,p))
+
+X<-tx
+Xn<-matrix(rep(0,(p*H^2)),p*H,p*H)
+Xn[1:p,1:p]<-solve(t(X[1:N[1],])%*%X[1:N[1],])
+for(i in 2:H){
+Xn[(p*(i-1)+1):(p*i),(p*(i-1)+1):(p*i)]<-solve(t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],])
+}
+
+tab<-ab
+Tx<-cbind(rep(1,n),x)
+beta<-lm(y~0+Tx)$coefficients
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*SAMP),p,SAMP)
+holdsigma<-rep(0,SAMP)
+holdG<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+
+for(samp in 1:SAMP){
+
+rho<-0
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,G)
+for(j in 1:H){
+tab[j,]<-lm((y[h==j]-Tx[h==j,]%*%beta)~x[h==j])$coefficients
+}
+latent<-t(matrix(drawmvn(1,
+solve(solve(sigma*Xn)+solve(V))%*%(solve(sigma*Xn)%*%c(t(tab))),solve(solve(sigma*Xn)+solve(V))),p,H))
+
+resid<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]
+for(i in 2:H){
+resid[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]
+}
+D<-solve(t(tx)%*%tx)*sigma
+d<-t(tx)%*%resid/sigma
+beta<-drawmvn(1,D%*%d,D)
+
+resid2<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid2[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]-tx[1:N[1],]%*%beta
+for(i in 2:H){
+resid2[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]-
+tx[(junk2[(i-1)]+1):junk2[i],]%*%beta
+}
+sigma<-sum(resid2^2)/rchisq(1,sum(N)-1)
+
+myS<-solve(t(latent)%*%latent+1*pG)
+junk3<-t(matrix(drawmvn((H+1),rep(0,p),myS),p,(H+1)))
+#myS<-solve(t(latent)%*%latent)
+#junk3<-t(matrix(drawmvn((H-1),rep(0,p),myS),p,(H-1)))
+G<-solve(t(junk3)%*%junk3)
+
+holdsigma[samp]<-sigma
+holdlatent[,,samp]<-latent
+holdbeta[,samp]<-beta
+holdG[,,samp]<-G
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+XHP<-Ph[1]*Xn[1:p,1:p]
+for(i in 2:H){
+XHP<-XHP+
+Ph[i]*Xn[(p*(i-1)+1):(p*i),(p*(i-1)+1):(p*i)]
+}
+XHPs<-solve(XHP)
+
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(i in 1:(SAMP-burn)){
+BHP<-matrix(Xn%*%c(t(holdbetah[,,i+burn])),p,H)%*%Ph
+postb[,i]<-(XHPs%*%BHP)
+}
+
+###AR 1###
+
+tab<-ab
+Tx<-cbind(rep(1,n),x)
+rho<-0
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*SAMP),p,SAMP)
+holdsigma<-rep(0,SAMP)
+holdG<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+holdrho<-rep(0,SAMP)
+for(samp in 1:SAMP){
+
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,G)
+for(j in 1:H){
+tab[j,]<-lm((y[h==j]-Tx[h==j,]%*%beta)~x[h==j])$coefficients
+}
+latent<-t(matrix(drawmvn(1,
+solve(solve(sigma*Xn)+solve(V))%*%(solve(sigma*Xn)%*%c(t(tab))),solve(solve(sigma*Xn)+solve(V))),p,H))
+
+resid<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]
+for(i in 2:H){
+resid[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]
+}
+D<-solve(t(tx)%*%tx)*sigma
+d<-t(tx)%*%resid/sigma
+beta<-drawmvn(1,D%*%d,D)
+
+resid2<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid2[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]-tx[1:N[1],]%*%beta
+for(i in 2:H){
+resid2[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]-
+tx[(junk2[(i-1)]+1):junk2[i],]%*%beta
+}
+sigma<-sum(resid2^2)/rchisq(1,sum(N)-1)
+
+betatwiddle<-latent
+betastar<-latent
+betastar[1,]<-latent[1,]-rho*latent[2,]
+for(i in 2:(H-1)){
+betastar[i,]<-(1+rho^2)*latent[i,]-rho*(latent[(i-1),]+latent[(i+1),])
+}
+betastar[H,]<-latent[H,]-rho*latent[(H-1),]
+temp<-t(betastar)%*%betatwiddle
+myS<-solve((1/(1-rho^2))*temp+1*pG)
+junk3<-t(matrix(drawmvn((H+1),rep(0,p),myS),p,(H+1)))
+G<-solve(t(junk3)%*%junk3)
+
+####Truncate rho to be positive###
+trho<-runif(100,0,1)
+tlnfrho<-rep(0,100)
+for(i in 1:100){
+tlnfrho[i]<-lnfrho(trho[i],p,H,latent,G)
+}
+rho<-sample(trho,size=1,prob=exp(tlnfrho))
+
+holdsigma[samp]<-sigma
+holdlatent[,,samp]<-latent
+holdbeta[,samp]<-beta
+holdG[,,samp]<-G
+holdrho[samp]<-rho
+
+print(samp)
+}
+
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+XHP<-Ph[1]*Xn[1:p,1:p]
+for(i in 2:H){
+XHP<-XHP+
+Ph[i]*Xn[(p*(i-1)+1):(p*i),(p*(i-1)+1):(p*i)]
+}
+XHPs<-solve(XHP)
+
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(i in 1:(SAMP-burn)){
+BHP<-matrix(Xn%*%c(t(holdbetah[,,i+burn])),p,H)%*%Ph
+postb[,i]<-(XHPs%*%BHP)
+}
+
+###Linear###
+
+tab<-ab
+Tx<-cbind(rep(1,n),x,h,h*x)
+beta<-lm(y~0+Tx)$coefficients
+Tx2<-cbind(rep(1,n),x[order(h)],h[order(h)],h[order(h)]*x[order(h)])
+
+G<-matrix(rep(0,p*p),p,p)
+for(i in 1:p){
+G[i,i]<-var(ab[,i])
+}
+
+holdlatent<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+holdbeta<-matrix(rep(0,p*2*SAMP),p*2,SAMP)
+holdsigma<-rep(0,SAMP)
+holdG<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+
+for(samp in 1:SAMP){
+
+rho<-0
+Vrho<-matrix(rep(0,H*H),H,H)
+for(i in 1:H){
+for(j in 1:H){
+Vrho[i,j]<-rho^abs(i-j)}}
+V<-kronecker(Vrho,G)
+for(j in 1:H){
+tab[j,]<-lm((y[h==j]-Tx[h==j,]%*%beta)~x[h==j])$coefficients
+}
+latent<-t(matrix(drawmvn(1,
+solve(solve(sigma*Xn)+solve(V))%*%(solve(sigma*Xn)%*%c(t(tab))),solve(solve(sigma*Xn)+solve(V))),p,H))
+
+resid<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]
+for(i in 2:H){
+resid[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]
+}
+D<-solve(t(Tx2)%*%Tx2)*sigma
+d<-t(Tx2)%*%resid/sigma
+beta<-drawmvn(1,D%*%d,D)
+
+resid2<-rep(0,length(ty))
+junk2<-cumsum(N)
+resid2[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%latent[1,]-Tx2[1:N[1],]%*%beta
+for(i in 2:H){
+resid2[(junk2[(i-1)]+1):junk2[i]]<-ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%latent[i,]-
+Tx2[(junk2[(i-1)]+1):junk2[i],]%*%beta
+}
+sigma<-sum(resid2^2)/rchisq(1,sum(N)-1)
+
+for(i in 1:p){
+G[i,i]<-sum(latent[,i]^2)/rchisq(1,H-2)
+}
+
+holdsigma[samp]<-sigma
+holdlatent[,,samp]<-latent
+holdbeta[,samp]<-beta
+holdG[,,samp]<-G
+
+print(samp)
+}
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+XHP<-Ph[1]*Xn[1:p,1:p]
+for(i in 2:H){
+XHP<-XHP+
+Ph[i]*Xn[(p*(i-1)+1):(p*i),(p*(i-1)+1):(p*i)]
+}
+XHPs<-solve(XHP)
+
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(i in 1:(SAMP-burn)){
+BHP<-matrix(Xn%*%c(t(holdbetah[,,i+burn])),p,H)%*%Ph
+postb[,i]<-(XHPs%*%BHP)
+}
+
+####Non-parametric###
+
+N<-c(table(h))
+ty<-y[order(h)]
+tx<-cbind(rep(1,length(x)),x[order(h)])
+
+ab<-matrix(rep(0,H*2),H,2)
+for(j in 1:H){
+ab[j,]<-lm(y[h==j]~x[h==j])$coefficients
+}
+
+G<-matrix(rep(0,p*p),p,p)
+for(i in 1:p){
+for(j in 1:p){
+G[i,j]<-var(ab[,i],ab[,j])
+}}
+
+beta<-NULL
+for(i in 1:p){
+beta<-c(beta,mean(ab[,i]))
+}
+latent<-ab
+for(i in 1:p){
+latent[,p]<-ab[,p]-beta[p]
+}
+junk2<-cumsum(N)
+junky<-ty
+junky[1:N[1]]<-ty[1:N[1]]-tx[1:N[1],]%*%(latent[1,]+beta)
+for(i in 2:H){
+junky[(junk2[(i-1)]+1):junk2[i]]<-
+ty[(junk2[(i-1)]+1):junk2[i]]-tx[(junk2[(i-1)]+1):junk2[i],]%*%(latent[i,]+beta)
+}
+sigma<-var(junky)
+
+X<-tx
+Tx<-cbind(rep(1,n),x,h,h*x)
+Tx3<-cbind(tx,h[order(h)]*tx)
+beta<-lm(y~0+Tx)$coefficients
+Tx2<-cbind(rep(1,n),x[order(h)],h[order(h)],h[order(h)]*x[order(h)])
+
+G<-diag(p)
+
+HX<-((1/(H-1))*(c(1:H)-1))
+nomega<-matrix(c(rep(0,H*H)),H,H)
+for(l in 1:H){
+for(m in 1:H){
+nomega[l,m]<-HX[l]*HX[m]*min(HX[l],HX[m])-(HX[l]+HX[m])*((min(HX[l],HX[m]))^2)/2+((min(HX[l],HX[m]))^3)/3
+}}
+myZ<-t(chol(nomega[2:(H),2:(H)]))
+myZ<-t(cbind(c(rep(0,(H-1))),t(myZ)))
+cspline<-matrix(c(rep(0,((H-1)*n))),n,(H-1))
+for(i in 1:n){cspline[i,]<-myZ[h[order(h)][i],]}
+
+cspline2<-array(c(rep(0,(p*(H-1)*n))),dim=c(n,(H-1),p))
+for(j in 1:p){cspline2[,,j]<-cspline*matrix(rep(tx[,j],(H-1)),n,(H-1))}
+cspline3<-cspline2[,,1]
+for(j in 2:p){
+cspline3<-cbind(cspline3,cspline2[,,j])
+}
+
+latent<-matrix(rep(0,(H-1)*p),H-1,p)
+for(j in 1:p){
+latent[,j]<-rnorm((H-1))
+}
+
+holdlatent<-array(rep(0,(H-1)*p*SAMP),dim=c((H-1),p,SAMP))
+holdbeta<-matrix(rep(0,p*2*SAMP),p*2,SAMP)
+holdsigma<-rep(0,SAMP)
+holdG<-array(rep(0,p*p*SAMP),dim=c(p,p,SAMP))
+
+for(samp in 1:SAMP){
+
+tystar<-ty-Tx3%*%beta
+V<-kronecker(G,diag(H-1))
+latent<-drawmvn(1,
+solve(t(cspline3)%*%cspline3+sigma*solve(V))%*%t(cspline3)%*%tystar,
+solve(t(cspline3)%*%cspline3/sigma+solve(V)))
+
+resid<-ty-cspline3%*%latent
+D<-solve(t(Tx2)%*%Tx2)*sigma
+d<-t(Tx2)%*%resid/sigma
+beta<-drawmvn(1,D%*%d,D)
+
+resid2<-ty-Tx2%*%beta-cspline3%*%latent
+sigma<-sum(resid2^2)/rchisq(1,sum(N)-1)
+
+latent<-matrix(latent,H-1,p)
+for(j in 1:p){
+G[j,j]<-sum(latent[,j]^2)/rchisq(1,H-3)
+}
+
+holdsigma[samp]<-sigma
+holdlatent[,,samp]<-latent
+holdbeta[,samp]<-beta
+holdG[,,samp]<-G
+
+print(samp)
+}
+
+
+holdbetah<-array(rep(0,H*p*SAMP),dim=c(H,p,SAMP))
+for(i in 1:SAMP){
+holdbetah[,,i]<-t(matrix(rep(holdbeta[,i],H),p,H))+holdlatent[,,i]
+}
+
+XHP<-Ph[1]*Xn[1:p,1:p]
+for(i in 2:H){
+XHP<-XHP+
+Ph[i]*Xn[(p*(i-1)+1):(p*i),(p*(i-1)+1):(p*i)]
+}
+XHPs<-solve(XHP)
+
+postb<-matrix(rep(0,(SAMP-burn)*p),p,(SAMP-burn))
+for(i in 1:(SAMP-burn)){
+BHP<-matrix(Xn%*%c(t(holdbetah[,,i+burn])),p,H)%*%Ph
+postb[,i]<-(XHPs%*%BHP)
+}
+
+
+###Generating deisgn weights that yield the weight-smoothed estimator###
+
+tx2<-cbind(rep(1,n),x)
+wh<-rep(2000,10)/table(h)
+wt<-wh[h]
+Bw<-lm(y~x,weights=c(wt))$coefficients
+
+SuperX<-matrix(rep(0,(p^2)),p,p)
+SuperX<-wh[1]*t(X[1:N[1],])%*%X[1:N[1],]
+for(i in 2:H){
+SuperX<-SuperX+wh[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]
+}
+
+Bs<-matrix(rep(0,(p^2)),p,p)
+Bs<-wh[1]*t(X[1:N[1],])%*%X[1:N[1],]%*%c(abexch[1,])
+for(i in 2:H){
+Bs<-Bs+wh[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(abexch[i,])
+}
+B<-solve(SuperX)%*%Bs
+
+Ts<-matrix(rep(0,(p^2)),p,p)
+t1<-solve(SuperX)%*%t(X[1:N[1],])%*%X[1:N[1],]%*%c(ab[1,])
+Ts<-wh[1]*t1%*%t(t1)
+for(i in 2:H){
+t1<-solve(SuperX)%*%t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(ab[i,])
+Ts<-Ts+wh[i]*t1%*%t(t1)
+}
+
+wh2<-wh
+t1<-solve(SuperX)%*%t(X[1:N[1],])%*%X[1:N[1],]%*%c(ab[1,])
+wh2[1]<-wh[1]*(1+t(B-Bw)%*%solve(Ts)%*%t1)
+for(i in 2:H){
+t1<-solve(SuperX)%*%t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(ab[i,])
+wh2[i]<-wh[i]*(1+t(B-Bw)%*%solve(Ts)%*%t1)
+}
+
+Bs<-matrix(rep(0,(p^2)),p,p)
+Bs<-wh[1]*t(X[1:N[1],])%*%X[1:N[1],]%*%c(ab[1,])
+for(i in 2:H){
+Bs<-Bs+wh[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(ab[i,])
+}
+solve(SuperX)%*%Bs
+
+Bs2<-matrix(rep(0,(p^2)),p,p)
+Bs2<-wh[1]*t(X[1:N[1],])%*%X[1:N[1],]%*%c(abexch[1,])
+for(i in 2:H){
+Bs2<-Bs2+wh[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(abexch[i,])
+}
+solve(SuperX)%*%Bs2
+
+Bs3<-matrix(rep(0,(p^2)),p,p)
+Bs3<-wh2[1]*t(X[1:N[1],])%*%X[1:N[1],]%*%c(ab[1,])
+for(i in 2:H){
+Bs3<-Bs3+wh2[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(ab[i,])
+}
+SuperX2<-matrix(rep(0,(p^2)),p,p)
+SuperX2<-wh2[1]*t(X[1:N[1],])%*%X[1:N[1],]
+for(i in 2:H){
+SuperX2<-SuperX2+wh2[i]*t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]
+}
+Bw<-solve(SuperX2)%*%Bs3
+Bw
+t1<-solve(SuperX2)%*%t(X[1:N[1],])%*%X[1:N[1],]%*%c(ab[1,])
+wh2[1]<-wh2[1]*(1+t(B-Bw)%*%solve(Ts)%*%t1)
+for(i in 2:H){
+t1<-solve(SuperX2)%*%t(X[(junk2[i-1]+1):junk2[i],])%*%X[(junk2[i-1]+1):junk2[i],]%*%c(ab[i,])
+wh2[i]<-wh2[i]*(1+t(B-Bw)%*%solve(Ts)%*%t1)
+}
+
+wt2<-wh2[h]
+lm(y~x,weights=c(wt2))$coefficients
+
